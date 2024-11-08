@@ -4,12 +4,21 @@ use axum::{
     routing::{get, post}, 
     Router
 };
-use std::net::SocketAddr;
-use std::time::Instant;
+
+use std::{
+    //backtrace::Backtrace,
+    env,
+    fmt,
+    net::SocketAddr,
+    time::Instant
+};
+
 use tower_http::trace::TraceLayer;
-use tracing::info; //also error, warn, debug...
+use tracing::{error, info}; //also error, warn, debug...
 use tracing_subscriber;
 use dotenv::dotenv;
+
+use tracing_subscriber::EnvFilter;
 
 mod jwt;
 mod utils;
@@ -17,8 +26,15 @@ mod utils;
 #[tokio::main]
 async fn main() {
     dotenv().ok();
+
+    // Enable backtrace programmatically. This allows to get full stack on errors
+    env::set_var("RUST_BACKTRACE", "1");
+
     // Initialize the logging system with tracing-subscriber
+    // Set up the subscriber with backtrace capture
     tracing_subscriber::fmt()
+        .with_env_filter(EnvFilter::from_default_env()) // Dynamic filtering via RUST_LOG
+        .with_writer(std::io::stdout)  // Output to stdout (or a file)
         .with_max_level(tracing::Level::INFO) // Set the logging level to INFO
         .init();
 
@@ -26,8 +42,9 @@ async fn main() {
     let app = Router::new()
         .route("/makeMeAdmin", post(make_me_admin))
         .route("/makeMeUser", post(make_me_user))
-        .route("/admin", get(test_user))
-        .route("/user", get(test_admin))
+        .route("/admin", get(test_admin))
+        .route("/user", get(test_user))
+        .route("/error", get(error_handler))
         .layer(TraceLayer::new_for_http())
         .layer(axum::middleware::from_fn(log_middleware)); // Adds HTTP request/response tracing
 
@@ -53,17 +70,23 @@ async fn log_middleware<B>(
     
     let headers: HeaderMap = req.headers().clone();
     
+    //TODO: Add request ID, application ID https://betterprogramming.pub/production-grade-logging-in-rust-applications-2c7fffd108a6
+    //TODO: Log error stack traces
     let bearer_token = utils::get_bearer_token(&headers);
     let mut auth = None;
+    let mut user = None;
+    let mut user_valid = String::new();
     let mut auth_valid_r = String::new();
     if let Some(token) = bearer_token {
         let secret = utils::get_jwt_secret();
         auth = utils::get_role(token, &secret);
+        user = utils::get_user(token, &secret);
     } 
     
     if let Some(auth_valid) = auth {
         auth_valid_r = auth_valid;
-        info!("Entering request: {} {} with authorization role {} ", req_method, req_uri, &auth_valid_r);
+        user_valid = user.unwrap(); // must be set, since we got auth
+        info!("Entering request: {} {} with authorization role {} for user {}", req_method, req_uri, &auth_valid_r, &user_valid);
     } else {
         info!("Entering request: {} {}", req_method, req_uri);
     }
@@ -74,12 +97,13 @@ async fn log_middleware<B>(
     let duration = start_time.elapsed();
 
     if !auth_valid_r.is_empty() {
-        info!("Exiting request: {} {} with status: {} (took {:?}) with authorization role {}", 
+        info!("Exiting request: {} {} with status: {} (took {:?}) with authorization role {} for user {}", 
             req_method, //gives the location that investigation could be needed
             req_uri,
             response.status(), //important to determine if access was granted or request got wrong
             duration, //if it's too long, might have to investigate
-            &auth_valid_r
+            &auth_valid_r,
+            &user_valid
         );
     } else {
         info!("Exiting request: {} {} with status: {} (took {:?})", 
@@ -140,4 +164,40 @@ async fn make_me_user() -> impl IntoResponse {
         token: token
     };
     (StatusCode::OK, JsonResponse(response))
+}
+
+// Modify the handler to log and return 500 with a stack trace
+async fn error_handler() -> Result<impl IntoResponse, (StatusCode, String)> {
+    match do_something_that_fails().await {
+        Ok(result) => Ok(JsonResponse(result)),
+        Err(e) => {
+            // Log the error and its stack trace
+            error!("An error occurred: {:?}", e);
+            // Print backtrace if either RUST_BACKTRACE or RUST_LIB_BACKTRACE is set
+            // println!("Custom backtrace: {}", Backtrace::capture());
+
+            // Return a 500 Internal Server Error to the client
+            Err((StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error".to_string()))
+        }
+    }
+}
+
+// A custom error type
+#[derive(Debug)]
+struct MyError {
+    message: String,
+}
+
+// to have it print out correctly
+impl fmt::Display for MyError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Error: {}", self.message)
+    }
+}
+
+async fn do_something_that_fails() -> Result<String, MyError> {
+    // Simulating an error that will generate a backtrace
+    Err(MyError {
+        message: "Something went wrong".to_string(),
+    })
 }

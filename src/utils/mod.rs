@@ -37,6 +37,13 @@ pub fn get_bearer_token(headers: &HeaderMap) -> Option<&str> {
     headers.get("Authorization").and_then(|h| h.to_str().ok()).map(|h| h.trim_start_matches("Bearer "))
 }
 
+pub fn get_user(token: &str, secret: &str) -> Option<String> {
+    if let Ok(data) = jwt::validate_jwt(token, &secret) {
+        return Some(data.claims.sub.clone());
+    }
+    return None;
+}
+
 pub fn get_role(token: &str, secret: &str) -> Option<String> {
     // verifies that validate_jwt does not return any errors (The Ok keyword validates a successful return), and assigns the non-erroneous return to data
     if let Ok(data) = jwt::validate_jwt(token, &secret) {
