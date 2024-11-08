@@ -1,0 +1,16 @@
+[package]
+name = "RustAPILogTutorial"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+axum = "0.6"
+tokio = { version = "1", features = ["full"] }
+tower = "0.4"
+tower-http = { version = "0.3", features = ["trace"] }
+tracing = "0.1"
+tracing-subscriber = "0.3"
+serde = "1.0"
+serde_json = "1.0"
+jsonwebtoken = "8" # used for managing your JWT tokens
+dotenv = "0.15" # allows to manage your environment variables
