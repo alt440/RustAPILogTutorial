@@ -1,3 +1,4 @@
+use anyhow::{Context, Result};
 use axum::{
     http::{StatusCode, HeaderMap},
     response::{Json as JsonResponse, IntoResponse}, 
@@ -7,18 +8,17 @@ use axum::{
 
 use std::{
     //backtrace::Backtrace,
-    env,
-    fmt,
-    net::SocketAddr,
-    time::Instant
+    net::SocketAddr, str, time::Instant
 };
+use std::panic::Location;
 
 use tower_http::trace::TraceLayer;
-use tracing::{error, info}; //also error, warn, debug...
+use tracing::{error, info, span, Level}; //also error, warn, debug...
 use tracing_subscriber;
 use dotenv::dotenv;
 
 use tracing_subscriber::EnvFilter;
+use uuid::Uuid;
 
 mod jwt;
 mod utils;
@@ -28,7 +28,7 @@ async fn main() {
     dotenv().ok();
 
     // Enable backtrace programmatically. This allows to get full stack on errors
-    env::set_var("RUST_BACKTRACE", "1");
+    // env::set_var("RUST_BACKTRACE", "1");
 
     // Initialize the logging system with tracing-subscriber
     // Set up the subscriber with backtrace capture
@@ -59,6 +59,10 @@ async fn main() {
         .unwrap();
 }
 
+fn generate_request_id() -> String {
+    Uuid::new_v4().to_string() // Generate a new request ID
+}
+
 // A generic function that all handlers can pass through, logging entrance and exit
 async fn log_middleware<B>(
     req: axum::http::Request<B>,
@@ -69,9 +73,12 @@ async fn log_middleware<B>(
     let req_uri = req.uri().clone();
     
     let headers: HeaderMap = req.headers().clone();
-    
-    //TODO: Add request ID, application ID https://betterprogramming.pub/production-grade-logging-in-rust-applications-2c7fffd108a6
-    //TODO: Log error stack traces
+
+    //Enter span context
+    let request_id = generate_request_id();
+    let span_val = span!(Level::INFO, "request", request_id = %request_id);
+    let _enter = span_val.enter();
+
     let bearer_token = utils::get_bearer_token(&headers);
     let mut auth = None;
     let mut user = None;
@@ -113,6 +120,8 @@ async fn log_middleware<B>(
             duration //if it's too long, might have to investigate
         );
     }
+
+    // Exits span context automatically when variable dropped at end of function
 
     response
 }
@@ -172,9 +181,7 @@ async fn error_handler() -> Result<impl IntoResponse, (StatusCode, String)> {
         Ok(result) => Ok(JsonResponse(result)),
         Err(e) => {
             // Log the error and its stack trace
-            error!("An error occurred: {:?}", e);
-            // Print backtrace if either RUST_BACKTRACE or RUST_LIB_BACKTRACE is set
-            // println!("Custom backtrace: {}", Backtrace::capture());
+            error!("An error occurred at {}:{}\n{:?}", file!(), line!(), e);
 
             // Return a 500 Internal Server Error to the client
             Err((StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error".to_string()))
@@ -182,22 +189,19 @@ async fn error_handler() -> Result<impl IntoResponse, (StatusCode, String)> {
     }
 }
 
-// A custom error type
-#[derive(Debug)]
-struct MyError {
-    message: String,
-}
-
-// to have it print out correctly
-impl fmt::Display for MyError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Error: {}", self.message)
-    }
-}
-
-async fn do_something_that_fails() -> Result<String, MyError> {
+async fn do_something_that_fails() -> Result<String> {
     // Simulating an error that will generate a backtrace
-    Err(MyError {
-        message: "Something went wrong".to_string(),
-    })
+    do_something_that_fails_2().await.context(log_method_location(Location::caller(), "do_something_that_fails"))
+}
+
+async fn do_something_that_fails_2() -> Result<String> {
+    // Simulating an error that will generate a backtrace
+    Err(anyhow::anyhow!("Failure in do_something_that_fails_2").context(log_method_location(Location::caller(), "do_something_that_fails_2")))?
+}
+
+fn log_method_location(location: &Location, method: &str) -> String {
+    let file = location.file();
+    let line = location.line();
+
+    format!("at {} {}:{}", method, file, line)
 }
